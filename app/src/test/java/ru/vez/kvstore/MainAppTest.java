@@ -3,11 +3,12 @@
  */
 package ru.vez.kvstore;
 
-import org.junit.Test;
 import static org.junit.Assert.*;
+import org.junit.Test;
 
 public class MainAppTest {
-    @Test public void appHasAGreeting() {
+    @Test 
+    public void appHasAGreeting() {
         MainApp classUnderTest = new MainApp();
         assertNotNull("app should have a greeting", classUnderTest.getGreeting());
     }
