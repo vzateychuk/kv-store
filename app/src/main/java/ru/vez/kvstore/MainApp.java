@@ -1,11 +1,11 @@
 package ru.vez.kvstore;
 
-public class MainApp {
-    public String getGreeting() {
-        return "Hello World!";
-    }
+import java.io.IOException;
 
-    public static void main(String[] args) {
-        System.out.println(new MainApp().getGreeting());
+public class MainApp {
+
+    public static void main(String[] args) throws IOException {
+        StoreEngine engine = new StoreEngine("store.db");
+        new KeyValueServer(engine).start();
     }
 }

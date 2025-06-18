@@ -11,17 +11,20 @@ Redis-like KV Store with IPC + Memory Mapping
 
 ## 🧠 Architecture Plan
 1. Core Modules
-    a. KeyValueServer
-    - Manages memory-mapped file for in-memory persistence.
+    a. ** StoreEngine ** - the core component managing:
+    - memory-mapped file for in-memory persistence.
+    - manual serialization of keys and values,
+    - in-memory index for fast lookup.
+    b. ** KeyValueServer ** - This is the IPC key-value store server that receives client requests (via TCP socket), parses commands, and delegates key-value operations (GET, SET, and DEL) to StoreEngine.
     - Listens for client connections over IPC.
     - Parses commands, updates in-memory data.
-    b. KeyValueClient
+    c. ** KeyValueClient ** - A simple key-value store client that connects to a KV Store server. It allows users to send GET, SET, and DEL commands interactively.
     - Sends commands via IPC to the server.
     - Receives and prints responses.
 
 ## 🛠️ Development Steps
 
-### Phase 1: Setup Memory-Mapped File
+### Phase 1: Setup Memory-Mapped Store
 1. Create or open a file for backing store (e.g. "store.db").
 2. Use `RandomAccessFile` + `FileChannel.map()` to map it into memory.
 3. Allocate a fixed-size region (e.g., 1MB to start).
@@ -61,7 +64,7 @@ DEL foo\n
 Since memory-mapped files can't store Java objects directly, you must:
 - Serialize key-value pairs manually (e.g. length-prefixed encoding).
 - Implement a custom serialization format, e.g.:
-```text
+```css
 [4-byte keyLen][keyBytes][4-byte valLen][valBytes]
 ```
 - Keep a hash map in-memory to index into offsets in the buffer
@@ -83,7 +86,6 @@ Map<String, Integer> keyOffsetMap; // maps key to byte offset: key → byte offs
 - Read responses via InputStream.
 > Consider a CLI REPL-style tool or a simple Client.send(String command) class.
 
-
 ### Phase 7. Optimizations and Persistence
 - Periodically sync memory to file. Call `MappedByteBuffer.force()` to flush memory to disk periodically or after every SET/DEL:
 ```java
@@ -96,3 +98,15 @@ buffer.force(); // flushes dirty pages to disk
     - Add synchronized blocks or locks if you go multithreaded.
 - Consider handling additional command `UPDATE`, `EXISTS`, etc., later.
 
+## ✅ Run Instructions
+
+** Start the server: **
+```bash
+./gradlew run --args='server'
+In another terminal, run the client:
+```
+
+** Start the client: **
+```bash
+./gradlew run --args='client'
+```
