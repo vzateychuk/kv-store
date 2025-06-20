@@ -110,3 +110,38 @@ In another terminal, run the client:
 ```bash
 ./gradlew run --args='client'
 ```
+
+## Command usage examples
+
+### SET
+
+** SET key value [ttlMillis] **
+TTL is optional. If omitted, key lives indefinitely
+
+example:
+```bash
+session abc123 60000
+```
+sets a key that expires in 60 seconds.
+
+### DEL
+
+### Combine together
+
+```bash
+> SET foo bar
+OK
+
+> SET temp value 5000
+OK
+
+> GET temp
+value
+(wait 5 seconds)
+
+> GET temp
+nil
+
+> GET foo
+bar
+```

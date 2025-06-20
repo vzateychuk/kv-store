@@ -55,38 +55,50 @@ public class KeyValueServer {
 
             String line;
             while ((line = reader.readLine()) != null) {
-                String[] parts = line.strip().split("\\s+", 3); // Supports commands with up to 3 parts (e.g., `SET key value`).
+                String[] parts = line.strip().split("\\s+", 4); // Supports commands with up to 4 parts (e.g., `SET key value ttl`).
                 String command = parts[0].toUpperCase();
                 String response;
 
                 // Delegates to the correct method of StoreEngine.
                 switch (command) {
                     case "GET" -> {
-                        if (parts.length != 2) response = "ERR wrong number of arguments\n";
-                        else {
-                            String key = parts[1];
-                            String val = engine.get(key);
+                        if (parts.length != 2) {
+                            response = "ERR wrong number of arguments for GET\n";
+                        } else {
+                            String val = engine.get(parts[1]);
                             response = (val != null ? val : "nil") + "\n";
                         }
                     }
                     case "SET" -> {
-                        if (parts.length != 3) response = "ERR wrong number of arguments\n";
-                        else {
+                        if (parts.length < 3 || parts.length > 4) {
+                            response = "ERR wrong number of arguments for SET\n";
+                        } else {
                             String key = parts[1];
-                            String val = parts[2];
-                            engine.set(key, val);
+                            String value = parts[2];
+                            long ttlMillis = 0;
+                            if (parts.length == 4) {
+                                try {
+                                    ttlMillis = Long.parseLong(parts[3]);
+                                } catch (NumberFormatException e) {
+                                    response = "ERR invalid TTL value\n";
+                                    writer.write(response);
+                                    writer.flush();
+                                    continue;
+                                }
+                            }
+                            engine.set(key, value, ttlMillis);
                             response = "OK\n";
                         }
                     }
                     case "DEL" -> {
-                        if (parts.length != 2) response = "ERR wrong number of arguments\n";
-                        else {
-                            String key = parts[1];
-                            boolean removed = engine.del(key);
-                            response = removed ? "OK, removed: " + key + "\n" : "Key not found: " + key + "\n";
+                        if (parts.length != 2) {
+                            response = "ERR wrong number of arguments for DEL\n";
+                        } else {
+                            boolean removed = engine.del(parts[1]);
+                            response = removed ? "OK\n" : "nil\n";
                         }
                     }
-                    default -> response = "ERR unknown command: '" + command + "'\n";
+                    default -> response = "ERR unknown command\n";
                 }
                 writer.write(response);
                 writer.flush();

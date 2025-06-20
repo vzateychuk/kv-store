@@ -13,19 +13,26 @@ import java.util.Map;
  * 
  * Key features include:
  * - Managing the persistence layer using MappedByteBuffer.
- * - Implementing a length-prefixed key-value format (Each entry in the file follows this binary layout: [4-byte keyLen][keyBytes][4-byte valLen][valBytes]).
+ * - Implementing a length-prefixed key-value format (Each entry in the file follows this binary layout: [4-byte keyLen][keyBytes][4-byte valLen][valBytes][8-byte expireTs]).
+ *   Where:
+ *      - keyLen: length of the key in bytes
+ *      - keyBytes: the actual key bytes
+ *      - valLen: length of the value in bytes
+ *      - valBytes: the actual value bytes
+ *      - expireTs: timestamp in milliseconds when the key should expire (0 means no expiration)
  * - Maintaining an in-memory index (map of key → offset).
  * - Handling GET, SET, DEL commands.
  * 
  * Improvement Ideas:
  * - Add space compaction or log rewrite (like Redis BGREWRITEAOF).
  * - Add force() after writes to flush to disk. Close?.
- * - Store timestamps for TTL.
  * - Track deleted keys for garbage collection.
  * - This is important to ensure that all data is persisted before the application exits.
  */
 public class StoreEngine {
     private static final int FILE_SIZE = 1024 * 1024;
+    private static final int HEADER_SIZE = 4 + 4 + 8; // keyLen + valLen + expireTs
+    
     private final MappedByteBuffer buffer;      // the memory-mapped backing file
     private final Map<String, Integer> index = new HashMap<>(); // in-memory index mapping keys to their offsets in the buffer
     private int writeOffset = 0;                // current write position in the buffer
@@ -42,32 +49,41 @@ public class StoreEngine {
     /** Loads the index from the memory-mapped buffer. It reads key-value pairs and populates the in-memory index.
      * This method assumes the buffer is already populated with valid key-value pairs.
      * The format is:
-     * [4-byte keyLen][keyBytes][4-byte valLen][valBytes]
-     * 
+     * [4-byte keyLen][keyBytes][4-byte valLen][valBytes][8-byte expireTs]
+     *
      * It only reads records that are fully written.
      * Index maps keys to their offset in the file (start of record).
      * writeOffset tracks the next available space to append.
+     * loadIndex() skips expired entries during startup.
      */
     private void loadIndex() {
         buffer.position(0);
-        while (buffer.remaining() >= 8) {
+        while (buffer.remaining() >= HEADER_SIZE) {
+            int pos = buffer.position();
             int keyLen = buffer.getInt();
-            if (keyLen <= 0 || buffer.remaining() < keyLen + 4) break;
+            if (keyLen <= 0 || buffer.remaining() < keyLen + 4 + 8) break;
             byte[] keyBytes = new byte[keyLen];
             buffer.get(keyBytes);
+
             int valLen = buffer.getInt();
-            if (valLen < 0 || buffer.remaining() < valLen) break;
+            if (valLen < 0 || buffer.remaining() < valLen + 8) break;
             byte[] valBytes = new byte[valLen];
             buffer.get(valBytes);
 
+            long expireTs = buffer.getLong();
             String key = new String(keyBytes, StandardCharsets.UTF_8);
-            index.put(key, buffer.position() - valLen - 4 - keyLen - 4);
+
+            long now = System.currentTimeMillis();
+            if (expireTs == 0 || expireTs > now) {
+                index.put(key, pos);
+            }
             writeOffset = buffer.position();
         }
     }
 
     /* Finds the offset from index. Reads the key/value from the buffer starting at that offset.
-     * Reconstructs the string value and returns it.
+     * - reconstructs the string value and returns it.
+     * - checks and evicts expired entries.
      */
     public synchronized String get(String key) {
         Integer offset = index.get(key);
@@ -75,30 +91,39 @@ public class StoreEngine {
 
         buffer.position(offset);
         int keyLen = buffer.getInt();
-        byte[] keyBytes = new byte[keyLen];
-        buffer.get(keyBytes);
+        buffer.position(buffer.position() + keyLen); // skip key
         int valLen = buffer.getInt();
         byte[] valBytes = new byte[valLen];
         buffer.get(valBytes);
+        long expireTs = buffer.getLong();
 
+        // checks and evicts expired entries.
+        long now = System.currentTimeMillis();
+        if (expireTs != 0 && expireTs < now) {
+            index.remove(key);
+            return null;
+        }
         return new String(valBytes, StandardCharsets.UTF_8);
     }
 
     /** Appends a new key-value pair in the store at writeOffset.
      * It appends the new entry to the end of the buffer and updates the index to point to this new location.
      * Does not erase older entries (like Redis AOF — old values persist but are no longer indexed).
+     * Accepts a ttlMillis argument (0 = no expiry).
      * Important: This model is append-only. Deletion does not reclaim space immediately.
      * 
-     * The format is:
-     * [4-byte keyLen][keyBytes][4-byte valLen][valBytes]
-     * 
-     * Throws RuntimeException if there is not enough space in the buffer.
+     * @param key the key to store
+     * @param value the value to store
+     * @param ttlMillis time-to-live in milliseconds (0 means no expiration)
+     * @throws RuntimeException if there is not enough space in the buffer (the buffer is full or if the key/value sizes exceed the remaining space).
      */
-    public synchronized void set(String key, String value) {
+    public synchronized void set(String key, String value, long ttlMillis) {
         byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
         byte[] valBytes = value.getBytes(StandardCharsets.UTF_8);
+        long expireTs = ttlMillis > 0 ? System.currentTimeMillis() + ttlMillis : 0;
 
-        if (writeOffset + 4 + keyBytes.length + 4 + valBytes.length > buffer.capacity())
+        int entrySize = HEADER_SIZE + keyBytes.length + valBytes.length;
+        if (writeOffset + entrySize > buffer.capacity())
             throw new RuntimeException("Buffer full");
 
         buffer.position(writeOffset);
@@ -106,6 +131,7 @@ public class StoreEngine {
         buffer.put(keyBytes);
         buffer.putInt(valBytes.length);
         buffer.put(valBytes);
+        buffer.putLong(expireTs);
 
         index.put(key, writeOffset);
         writeOffset = buffer.position();

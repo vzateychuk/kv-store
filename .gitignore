@@ -10,6 +10,10 @@
 # Log file
 *.log
 
+# Data files
+*.dat
+*.db
+
 # BlueJ files
 *.ctxt
 
