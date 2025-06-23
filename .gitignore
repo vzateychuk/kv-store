@@ -3,6 +3,7 @@
 
 # VS Code settings
 .vscode/
+.idea/
 
 # Compiled class file
 *.class

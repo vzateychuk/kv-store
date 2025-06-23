@@ -86,6 +86,8 @@ public class StoreEngine {
      * - checks and evicts expired entries.
      */
     public synchronized String get(String key) {
+        if (key == null) throw new NullPointerException("key must not be null");
+    
         Integer offset = index.get(key);
         if (offset == null) return null;
 
@@ -118,6 +120,9 @@ public class StoreEngine {
      * @throws RuntimeException if there is not enough space in the buffer (the buffer is full or if the key/value sizes exceed the remaining space).
      */
     public synchronized void set(String key, String value, long ttlMillis) {
+        if (key == null) throw new NullPointerException("key must not be null");
+        if (value == null) throw new NullPointerException("value must not be null");
+
         byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
         byte[] valBytes = value.getBytes(StandardCharsets.UTF_8);
         long expireTs = ttlMillis > 0 ? System.currentTimeMillis() + ttlMillis : 0;
@@ -143,6 +148,7 @@ public class StoreEngine {
      * Returns true if the key was found and removed, false otherwise.
      */
     public synchronized boolean del(String key) {
+        if (key == null) throw new NullPointerException("key must not be null");
         return index.remove(key) != null;
     }
 }

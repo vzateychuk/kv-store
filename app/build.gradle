@@ -28,3 +28,10 @@ dependencies {
 application {
     mainClass = 'ru.vez.kvstore.MainApp'
 }
+
+test {
+    useJUnitPlatform()
+    testLogging {
+        showStandardStreams = true
+    }
+}
