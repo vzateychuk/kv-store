@@ -8,6 +8,8 @@ import java.nio.charset.StandardCharsets;
 import java.util.HashMap;
 import java.util.Map;
 
+import org.apache.commons.lang3.StringUtils;
+
 /** Handles mmap + serialization. This is a simple key-value store engine that uses memory-mapped files for persistence.
  * It supports basic operations like GET, SET, and DEL.
  * 
@@ -84,9 +86,13 @@ public class StoreEngine {
     /* Finds the offset from index. Reads the key/value from the buffer starting at that offset.
      * - reconstructs the string value and returns it.
      * - checks and evicts expired entries.
+     * 
+     * @param key the key to retrieve
+     * @return the value associated with the key, or null if the key does not exist
+     * @throws IllegalArgumentException if the key is blank
      */
     public synchronized String get(String key) {
-        if (key == null) throw new NullPointerException("key must not be null");
+        if (StringUtils.isBlank(key)) throw new IllegalArgumentException("key must not be blank");
     
         Integer offset = index.get(key);
         if (offset == null) return null;
@@ -117,10 +123,12 @@ public class StoreEngine {
      * @param key the key to store
      * @param value the value to store
      * @param ttlMillis time-to-live in milliseconds (0 means no expiration)
+     * @throws IllegalArgumentException if the key is blank or ttlMillis is negative
+     * @throws NullPointerException if the value is null
      * @throws RuntimeException if there is not enough space in the buffer (the buffer is full or if the key/value sizes exceed the remaining space).
      */
     public synchronized void set(String key, String value, long ttlMillis) {
-        if (key == null) throw new NullPointerException("key must not be null");
+        if (StringUtils.isBlank(key)) throw new IllegalArgumentException("key must not be blank");
         if (value == null) throw new NullPointerException("value must not be null");
 
         byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
@@ -146,9 +154,60 @@ public class StoreEngine {
      * The data remains in the buffer, but it is no longer accessible via GET.
      * 
      * Returns true if the key was found and removed, false otherwise.
+     * @param key the key to delete
+     * @return true if the key was found and removed, false if the key does not exist
+     * @throws IllegalArgumentException if the key is blank
      */
     public synchronized boolean del(String key) {
-        if (key == null) throw new NullPointerException("key must not be null");
+        if (StringUtils.isBlank(key)) throw new IllegalArgumentException("key must not be blank");
         return index.remove(key) != null;
     }
+
+    /** Updates the TTL (expire time) for an existing key.
+     * If the key exists, appends a new record with the same value and new expiration.
+     * Returns true if the key existed and was updated, false otherwise.
+     * This method does not remove the old entry; it simply adds a new one with the updated expiration.
+
+     * @param key the key to update
+     * @param ttlMillis the new time-to-live in milliseconds (0 means no expiration)
+     * @return true if the key was found and updated, false if the key does not exist
+
+     * @throws NullPointerException if the key is null
+     * @throws IllegalArgumentException if key is blank or ttlMillis is negative
+     * @throws RuntimeException if there is not enough space in the buffer to write the new entry
+     */
+    public synchronized boolean expire(String key, long ttlMillis) {
+
+        if (StringUtils.isBlank(key)) throw new IllegalArgumentException("key must not be blank");
+        if (ttlMillis < 0) throw new IllegalArgumentException("ttlMillis must not be negative");
+        
+        Integer offset = index.get(key);
+        if (offset == null) return false;
+
+        buffer.position(offset);
+        int keyLen = buffer.getInt();
+        buffer.position(buffer.position() + keyLen); // skip key
+        int valLen = buffer.getInt();
+        byte[] valBytes = new byte[valLen];
+        buffer.get(valBytes);
+        // skip old expireTs
+        buffer.getLong();
+
+        byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+        long expireTs = ttlMillis > 0 ? System.currentTimeMillis() + ttlMillis : 0;
+        int entrySize = HEADER_SIZE + keyBytes.length + valBytes.length;
+        if (writeOffset + entrySize > buffer.capacity())
+            throw new RuntimeException("Buffer full");
+
+        buffer.position(writeOffset);
+        buffer.putInt(keyBytes.length);
+        buffer.put(keyBytes);
+        buffer.putInt(valBytes.length);
+        buffer.put(valBytes);
+        buffer.putLong(expireTs);
+
+        index.put(key, writeOffset);
+        writeOffset = buffer.position();
+        return true;
+    }   
 }

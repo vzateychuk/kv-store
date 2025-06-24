@@ -17,6 +17,10 @@ repositories {
 
 dependencies {
 
+    implementation (
+        'org.apache.commons:commons-lang3:3.17.0',
+    )
+
     testRuntimeOnly 'org.junit.platform:junit-platform-launcher:1.10.2'
 
     testImplementation(

@@ -82,25 +82,58 @@ public class StoreEngineTest {
             assertNull(store.get("nope"));
             assertFalse(store.del("nope"));
         }
+
+        @Test
+        void testExpireUpdatesTTL() throws InterruptedException {
+            store.set("foo", "bar", 0);
+            assertTrue(store.expire("foo", 100)); // Set TTL to 100ms
+            assertEquals("bar", store.get("foo"));
+            Thread.sleep(150);
+            assertNull(store.get("foo")); // Should be expired
+        }
+
+        @Test
+        void testExpireOnNonExistentKeyReturnsFalse() {
+            assertFalse(store.expire("nope", 1000));
+        }
+
+        @Test
+        void testExpireWithZeroTTLMeansNoExpiry() throws InterruptedException {
+            store.set("foo", "bar", 10);
+            assertTrue(store.expire("foo", 0)); // Remove expiry
+            Thread.sleep(20);
+            assertEquals("bar", store.get("foo"));
+        }
     }
 
     @Nested
     class EdgeCasesTests {
 
         @Test
-        void testEmptyKeyAndValue() {
-            store.set("", "", 0);
-            assertEquals("", store.get(""));
-            assertTrue(store.del(""));
-            assertNull(store.get(""));
+        void testEmptyValue() {
+            store.set("key", "", 0);
+            assertEquals("", store.get("key"));
         }
 
         @Test
-        void testNullKeyOrValueThrows() {
-            assertThrows(NullPointerException.class, () -> store.set(null, "v", 0));
+        void testBlankKeyThrows() {
+            // get
+            assertThrows(IllegalArgumentException.class, () -> store.get(" "));
+            assertThrows(IllegalArgumentException.class, () -> store.get(null));
+            // set
+            assertThrows(IllegalArgumentException.class, () -> store.set(" ", "v", 0));
+            assertThrows(IllegalArgumentException.class, () -> store.set(null, "v", 0));
+            // del
+            assertThrows(IllegalArgumentException.class, () -> store.del(" "));
+            assertThrows(IllegalArgumentException.class, () -> store.del(null));
+            // expire
+            assertThrows(IllegalArgumentException.class, () -> store.expire(" ", 1000));
+            assertThrows(IllegalArgumentException.class, () -> store.expire(null, 1000));
+        }
+
+        @Test
+        void testNullValueThrows() {
             assertThrows(NullPointerException.class, () -> store.set("k", null, 0));
-            assertThrows(NullPointerException.class, () -> store.get(null));
-            assertThrows(NullPointerException.class, () -> store.del(null));
         }
 
         @Test
@@ -144,6 +177,17 @@ public class StoreEngineTest {
             store.set("persist", "yes", 0);
             store = new StoreEngine(tempFile.getAbsolutePath());
             assertEquals("yes", store.get("persist"));
+        }
+
+        @Test
+        void testExpireNegativeTTLThrows() {
+            store.set("negttl", "val", 10);
+            assertThrows(IllegalArgumentException.class, () -> store.expire("negttl", -1000));
+        }
+
+        @Test
+        void testExpireNegativeTTLThrowsOnNonExistentKey() {
+            assertThrows(IllegalArgumentException.class, () -> store.expire("nope", -1));
         }
     }
 
@@ -248,6 +292,53 @@ public class StoreEngineTest {
                     assertNull(store.get(key), key + " should be deleted");
                 }
             }
+        }
+
+        @Test
+        void testConcurrentExpire() throws Exception {
+            int threads = 10;
+            int keysPerThread = 20;
+            ExecutorService executor = Executors.newFixedThreadPool(threads);
+            CountDownLatch setLatch = new CountDownLatch(threads);
+
+            // Set keys
+            for (int t = 0; t < threads; t++) {
+                final int threadNum = t;
+                executor.submit(() -> {
+                    for (int i = 0; i < keysPerThread; i++) {
+                        String key = "expire" + threadNum + "_" + i;
+                        store.set(key, "v" + threadNum + "_" + i, 0);
+                    }
+                    setLatch.countDown();
+                });
+            }
+            setLatch.await(5, TimeUnit.SECONDS);
+
+            // Expire keys concurrently
+            CountDownLatch expireLatch = new CountDownLatch(threads);
+            for (int t = 0; t < threads; t++) {
+                final int threadNum = t;
+                executor.submit(() -> {
+                    for (int i = 0; i < keysPerThread; i++) {
+                        String key = "expire" + threadNum + "_" + i;
+                        assertTrue(store.expire(key, 100));
+                    }
+                    expireLatch.countDown();
+                });
+            }
+            expireLatch.await(5, TimeUnit.SECONDS);
+
+            Thread.sleep(150);
+
+            // All keys should be expired
+            for (int t = 0; t < threads; t++) {
+                for (int i = 0; i < keysPerThread; i++) {
+                    String key = "expire" + t + "_" + i;
+                    assertNull(store.get(key), key + " should be expired");
+                }
+            }
+            executor.shutdown();
+            executor.awaitTermination(5, TimeUnit.SECONDS);
         }
     }
 }
