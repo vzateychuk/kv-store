@@ -210,4 +210,9 @@ public class StoreEngine {
         writeOffset = buffer.position();
         return true;
     }   
+
+    /** Forces any changes made to this buffer to be written to the file. The method must be called right before application shutdown to ensure data is persisted. */
+    public synchronized void flush() {
+        buffer.force();
+    }
 }

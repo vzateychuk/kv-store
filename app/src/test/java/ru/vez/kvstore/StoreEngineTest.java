@@ -204,7 +204,7 @@ public class StoreEngineTest {
 
         @BeforeAll
         void setUpExecutor() {
-            executor = Executors.newFixedThreadPool(10); // or any suitable number
+            executor = Executors.newFixedThreadPool(THREADS); // or any suitable number
         }
 
         @AfterAll
