@@ -13,9 +13,12 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
+import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.TestInstance;
 import org.junit.jupiter.api.Nested;
 
 public class StoreEngineTest {
@@ -192,15 +195,30 @@ public class StoreEngineTest {
     }
 
     @Nested
+    @TestInstance(TestInstance.Lifecycle.PER_CLASS)
     class ConcurrentTests {
+
+        private final  int THREADS = 10;
+
+        private ExecutorService executor;
+
+        @BeforeAll
+        void setUpExecutor() {
+            executor = Executors.newFixedThreadPool(10); // or any suitable number
+        }
+
+        @AfterAll
+        void tearDownExecutor() throws InterruptedException {
+            executor.shutdown();
+            executor.awaitTermination(3, TimeUnit.SECONDS);
+        }
+
         @Test
         void testConcurrentSetAndGet() throws Exception {
-            int threads = 10;
             int keysPerThread = 100;
-            ExecutorService executor = Executors.newFixedThreadPool(threads);
-            CountDownLatch latch = new CountDownLatch(threads * keysPerThread);
+            CountDownLatch latch = new CountDownLatch(THREADS * keysPerThread);
 
-            for (int i = 0; i < threads; i++) {
+            for (int i = 0; i < THREADS; i++) {
                 final int threadNum = i;
                 executor.submit(() -> {
                     for (int j = 0; j < keysPerThread; j++) {
@@ -213,11 +231,9 @@ public class StoreEngineTest {
                 });
             }
             latch.await(5, TimeUnit.SECONDS); // Wait for all threads to finish
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-            executor.shutdown();
 
             // Verify all keys are set correctly
-            for (int i = 0; i < threads; i++) {
+            for (int i = 0; i < THREADS; i++) {
                 for (int j = 0; j < keysPerThread; j++) {
                     String key = "key" + i + "_" + j;
                     String val = "val" + i + "_" + j;
@@ -228,12 +244,10 @@ public class StoreEngineTest {
 
         @Test
         void testConcurrentSetAndGetWithSameKey() throws Exception {
-            int threads = 10;
-            ExecutorService executor = Executors.newFixedThreadPool(threads);
-            CountDownLatch latch = new CountDownLatch(threads); 
+            CountDownLatch latch = new CountDownLatch(THREADS);
             String key = "sharedKey";
             String baseValue = "baseValue";
-            for (int i = 0; i < threads; i++) {
+            for (int i = 0; i < THREADS; i++) {
                 final int threadNum = i;
                 executor.submit(() -> {
                     String value = baseValue + threadNum;
@@ -244,19 +258,15 @@ public class StoreEngineTest {
                 });
             }            
             latch.await(5, TimeUnit.SECONDS); // Wait for all threads to finish
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-            executor.shutdown();
         }
 
         @Test
         void testConcurrentSetAndDelete() throws Exception {
-            int threads = 10;
             int keysPerThread = 50;
-            ExecutorService executor = Executors.newFixedThreadPool(threads);
 
             // Set keys concurrently
-            CountDownLatch setLatch = new CountDownLatch(threads);
-            for (int t = 0; t < threads; t++) {
+            CountDownLatch setLatch = new CountDownLatch(THREADS);
+            for (int t = 0; t < THREADS; t++) {
                 final int threadNum = t;
                 executor.submit(() -> {
                     for (int i = 0; i < keysPerThread; i++) {
@@ -269,8 +279,8 @@ public class StoreEngineTest {
             setLatch.await(5, TimeUnit.SECONDS);
 
             // Delete keys concurrently
-            CountDownLatch delLatch = new CountDownLatch(threads);
-            for (int t = 0; t < threads; t++) {
+            CountDownLatch delLatch = new CountDownLatch(THREADS);
+            for (int t = 0; t < THREADS; t++) {
                 final int threadNum = t;
                 executor.submit(() -> {
                     for (int i = 0; i < keysPerThread; i++) {
@@ -282,11 +292,8 @@ public class StoreEngineTest {
             }
             delLatch.await(5, TimeUnit.SECONDS); // Wait for all threads to finish
 
-            executor.awaitTermination(5, TimeUnit.SECONDS);
-            executor.shutdown();
-
             // Verify all keys are deleted
-            for (int t = 0; t < threads; t++) {
+            for (int t = 0; t < THREADS; t++) {
                 for (int i = 0; i < keysPerThread; i++) {
                     String key = "del" + t + "_" + i;
                     assertNull(store.get(key), key + " should be deleted");
@@ -296,13 +303,11 @@ public class StoreEngineTest {
 
         @Test
         void testConcurrentExpire() throws Exception {
-            int threads = 10;
             int keysPerThread = 20;
-            ExecutorService executor = Executors.newFixedThreadPool(threads);
-            CountDownLatch setLatch = new CountDownLatch(threads);
+            CountDownLatch setLatch = new CountDownLatch(THREADS);
 
             // Set keys
-            for (int t = 0; t < threads; t++) {
+            for (int t = 0; t < THREADS; t++) {
                 final int threadNum = t;
                 executor.submit(() -> {
                     for (int i = 0; i < keysPerThread; i++) {
@@ -315,8 +320,8 @@ public class StoreEngineTest {
             setLatch.await(5, TimeUnit.SECONDS);
 
             // Expire keys concurrently
-            CountDownLatch expireLatch = new CountDownLatch(threads);
-            for (int t = 0; t < threads; t++) {
+            CountDownLatch expireLatch = new CountDownLatch(THREADS);
+            for (int t = 0; t < THREADS; t++) {
                 final int threadNum = t;
                 executor.submit(() -> {
                     for (int i = 0; i < keysPerThread; i++) {
@@ -331,14 +336,12 @@ public class StoreEngineTest {
             Thread.sleep(150);
 
             // All keys should be expired
-            for (int t = 0; t < threads; t++) {
+            for (int t = 0; t < THREADS; t++) {
                 for (int i = 0; i < keysPerThread; i++) {
                     String key = "expire" + t + "_" + i;
                     assertNull(store.get(key), key + " should be expired");
                 }
             }
-            executor.shutdown();
-            executor.awaitTermination(5, TimeUnit.SECONDS);
         }
     }
 }
