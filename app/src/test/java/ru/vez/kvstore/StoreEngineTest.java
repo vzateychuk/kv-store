@@ -107,6 +107,24 @@ public class StoreEngineTest {
             Thread.sleep(20);
             assertEquals("bar", store.get("foo"));
         }
+
+        @Test
+        void testCompactRemovesDeletedAndExpiredKeys() throws Exception {
+            store.set("a", "1", 0);
+            store.set("b", "2", 0);
+            store.set("c", "3", 50);
+            store.del("b");
+            Thread.sleep(60); // let "c" expire
+
+            File compacted = File.createTempFile("kvstore_compact", ".db");
+            store.compact(compacted.getAbsolutePath());
+
+            StoreEngine compactedStore = new StoreEngine(compacted.getAbsolutePath());
+            assertEquals("1", compactedStore.get("a"));
+            assertNull(compactedStore.get("b"));
+            assertNull(compactedStore.get("c"));
+            compacted.delete();
+        }
     }
 
     @Nested
@@ -191,6 +209,30 @@ public class StoreEngineTest {
         @Test
         void testExpireNegativeTTLThrowsOnNonExistentKey() {
             assertThrows(IllegalArgumentException.class, () -> store.expire("nope", -1));
+        }
+
+        /** Guarantees that running compaction on an empty store results in an empty compacted file, and that the operation completes without error */
+        @Test
+        void testCompactOnEmptyStore() throws Exception {
+            File compacted = File.createTempFile("kvstore_compact", ".db");
+            store.compact(compacted.getAbsolutePath());
+            StoreEngine compactedStore = new StoreEngine(compacted.getAbsolutePath());
+            assertNull(compactedStore.get("any"));
+            compacted.delete();
+        }
+
+        @Test
+        void testCompactWithAllKeysDeleted() throws Exception {
+            store.set("x", "1", 0);
+            store.set("y", "2", 0);
+            store.del("x");
+            store.del("y");
+            File compacted = File.createTempFile("kvstore_compact", ".db");
+            store.compact(compacted.getAbsolutePath());
+            StoreEngine compactedStore = new StoreEngine(compacted.getAbsolutePath());
+            assertNull(compactedStore.get("x"));
+            assertNull(compactedStore.get("y"));
+            compacted.delete();
         }
     }
 
@@ -342,6 +384,39 @@ public class StoreEngineTest {
                     assertNull(store.get(key), key + " should be expired");
                 }
             }
+        }
+
+        @Test
+        void testConcurrentCompactWithWrites() throws Exception {
+            int keys = 50;
+            for (int i = 0; i < keys; i++) {
+                store.set("k" + i, "v" + i, 0);
+            }
+
+            // Start a thread that deletes half the keys while compacting
+            Thread deleter = new Thread(() -> {
+                for (int i = 0; i < keys / 2; i++) {
+                    store.del("k" + i);
+                }
+            });
+
+            File compacted = File.createTempFile("kvstore_compact", ".db");
+            deleter.start();
+            store.compact(compacted.getAbsolutePath());
+            deleter.join();
+
+            StoreEngine compactedStore = new StoreEngine(compacted.getAbsolutePath());
+            for (int i = 0; i < keys; i++) {
+                String val = compactedStore.get("k" + i);
+                if (i < keys / 2) {
+                    // Accept either null (deleted before compaction) or the value (compaction won the race)
+                    assertTrue(val == null || val.equals("v" + i),
+                        "k" + i + " should be either deleted or present due to race, but was: " + val);
+                } else {
+                    assertEquals("v" + i, val);
+                }
+            }
+            compacted.delete();
         }
     }
 }

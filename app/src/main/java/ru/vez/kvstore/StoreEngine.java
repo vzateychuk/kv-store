@@ -48,7 +48,7 @@ public class StoreEngine {
         loadIndex();    
     }
 
-    /** Loads the index from the memory-mapped buffer. It reads key-value pairs and populates the in-memory index.
+    /** Loads the index from the memory-mapped buffer. Reads key-value pairs and populates the in-memory index. Handles tombstones for deleted keys.
      * This method assumes the buffer is already populated with valid key-value pairs.
      * The format is:
      * [4-byte keyLen][keyBytes][4-byte valLen][valBytes][8-byte expireTs]
@@ -59,6 +59,7 @@ public class StoreEngine {
      * loadIndex() skips expired entries during startup.
      */
     private void loadIndex() {
+        index.clear();
         buffer.position(0);
         while (buffer.remaining() >= HEADER_SIZE) {
             int pos = buffer.position();
@@ -68,13 +69,23 @@ public class StoreEngine {
             buffer.get(keyBytes);
 
             int valLen = buffer.getInt();
+            String key = new String(keyBytes, StandardCharsets.UTF_8);
+
+            // If valLen is -1, it indicates a tombstone (deleted key).
+            // We skip the value and expire timestamp, effectively removing the key from the index.
+            if (valLen == -1) {
+                // Tombstone: key was deleted
+                buffer.position(buffer.position() + 8); // skip expireTs
+                index.remove(key);
+                writeOffset = buffer.position();
+                continue;
+            }
+
             if (valLen < 0 || buffer.remaining() < valLen + 8) break;
             byte[] valBytes = new byte[valLen];
             buffer.get(valBytes);
 
             long expireTs = buffer.getLong();
-            String key = new String(keyBytes, StandardCharsets.UTF_8);
-
             long now = System.currentTimeMillis();
             if (expireTs == 0 || expireTs > now) {
                 index.put(key, pos);
@@ -150,7 +161,7 @@ public class StoreEngine {
         writeOffset = buffer.position();
     }
 
-    /** Deletes a key from the store. Removes the key from the in-memory index but does not erase the data from the buffer.
+    /** Deletes a key from the store. Appends a tombstone record and removes the key from the index.
      * The data remains in the buffer, but it is no longer accessible via GET.
      * 
      * Returns true if the key was found and removed, false otherwise.
@@ -160,7 +171,23 @@ public class StoreEngine {
      */
     public synchronized boolean del(String key) {
         if (StringUtils.isBlank(key)) throw new IllegalArgumentException("key must not be blank");
-        return index.remove(key) != null;
+        Integer offset = index.remove(key);
+        if (offset == null) return false;
+
+        // Write tombstone record
+        byte[] keyBytes = key.getBytes(StandardCharsets.UTF_8);
+        int entrySize = 4 + keyBytes.length + 4 + 8; // keyLen + keyBytes + valLen + expireTs
+        if (writeOffset + entrySize > buffer.capacity())
+            throw new RuntimeException("Buffer full");
+
+        buffer.position(writeOffset);
+        buffer.putInt(keyBytes.length);
+        buffer.put(keyBytes);
+        buffer.putInt(-1); // tombstone marker
+        buffer.putLong(0L); // expireTs not used for tombstone
+
+        writeOffset = buffer.position();
+        return true;
     }
 
     /** Updates the TTL (expire time) for an existing key.
@@ -214,5 +241,46 @@ public class StoreEngine {
     /** Forces any changes made to this buffer to be written to the file. The method must be called right before application shutdown to ensure data is persisted. */
     public synchronized void flush() {
         buffer.force();
+    }
+
+    /** Compacts the store by rewriting only live (non-deleted, non-expired) entries to a new file. */
+    public synchronized void compact(String newFilename) throws IOException {
+        try (RandomAccessFile raf = new RandomAccessFile(newFilename, "rw")) {
+            FileChannel channel = raf.getChannel();
+            MappedByteBuffer newBuffer = channel.map(FileChannel.MapMode.READ_WRITE, 0, FILE_SIZE);
+            int newWriteOffset = 0;
+            Map<String, Integer> newIndex = new HashMap<>();
+
+            long now = System.currentTimeMillis();
+            for (Map.Entry<String, Integer> entry : index.entrySet()) {
+                String key = entry.getKey();
+                Integer offset = entry.getValue();
+
+                buffer.position(offset);
+                int keyLen = buffer.getInt();
+                byte[] keyBytes = new byte[keyLen];
+                buffer.get(keyBytes);
+                int valLen = buffer.getInt();
+                byte[] valBytes = new byte[valLen];
+                buffer.get(valBytes);
+                long expireTs = buffer.getLong();
+
+                if (expireTs != 0 && expireTs < now) continue; // skip expired
+
+                // Write to new buffer
+                newBuffer.position(newWriteOffset);
+                newBuffer.putInt(keyBytes.length);
+                newBuffer.put(keyBytes);
+                newBuffer.putInt(valBytes.length);
+                newBuffer.put(valBytes);
+                newBuffer.putLong(expireTs);
+
+                newIndex.put(key, newWriteOffset);
+                newWriteOffset = newBuffer.position();
+            }
+
+            // Optionally, replace the old buffer/index/writeOffset with the new ones
+            // (requires more logic to close the old file and remap)
+        }
     }
 }
